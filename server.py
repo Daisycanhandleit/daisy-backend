@@ -2432,6 +2432,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                 # Create the reminder
                 reminder = Reminder(
                     creator_id=user['id'] if user else f"whatsapp_{from_phone}",
+                    creator_phone=from_phone,
                     message=reminder_message,
                     scheduled_time=scheduled_dt,
                     recipient_phone=recipient_phone,
@@ -2597,6 +2598,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                     
                     reminder = Reminder(
                         creator_id=user['id'] if user else f"whatsapp_{from_phone}",
+                        creator_phone=from_phone,
                         message=reminder_message,
                         scheduled_time=scheduled_dt,
                         recipient_phone=recipient_phone,
@@ -2645,6 +2647,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                     
                     reminder = Reminder(
                         creator_id=user['id'] if user else f"whatsapp_{from_phone}",
+                        creator_phone=from_phone,
                         message=reminder_message,
                         scheduled_time=scheduled_dt,
                         recipient_phone=recipient_phone,
@@ -2696,6 +2699,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                     
                     reminder = Reminder(
                         creator_id=user['id'] if user else f"whatsapp_{from_phone}",
+                        creator_phone=from_phone,
                         message=reminder_message,
                         scheduled_time=scheduled_dt,
                         recipient_phone=recipient_phone,
@@ -2735,6 +2739,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                     
                     reminder = Reminder(
                         creator_id=user['id'] if user else f"whatsapp_{from_phone}",
+                        creator_phone=from_phone,
                         message=reminder_message,
                         scheduled_time=scheduled_dt,
                         recipient_phone=recipient_phone,
