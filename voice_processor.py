@@ -11,17 +11,17 @@ import httpx
 from typing import Optional, Dict, Tuple
 from dotenv import load_dotenv
 from pathlib import Path
+from openai import AsyncOpenAI
 
 # Load environment variables
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
 
-from emergentintegrations.llm.openai import OpenAISpeechToText
-
 logger = logging.getLogger(__name__)
 
-# Initialize Speech-to-Text
-EMERGENT_LLM_KEY = os.environ.get('EMERGENT_LLM_KEY')
+# Initialize OpenAI client
+OPENAI_API_KEY = os.environ.get('OPENAI_API_KEY')
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 
 async def download_audio_file(media_url: str, auth: tuple) -> Optional[bytes]:
@@ -60,14 +60,11 @@ async def transcribe_audio(audio_bytes: bytes, language: str = None) -> Optional
     Returns:
         Transcribed text or None if transcription fails
     """
-    if not EMERGENT_LLM_KEY:
-        logger.error("EMERGENT_LLM_KEY not configured for voice transcription")
+    if not openai_client:
+        logger.error("OpenAI API key not configured for voice transcription")
         return None
     
     try:
-        # Initialize STT
-        stt = OpenAISpeechToText(api_key=EMERGENT_LLM_KEY)
-        
         # Write audio to temporary OGG file
         with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_ogg:
             tmp_ogg.write(audio_bytes)
@@ -95,207 +92,279 @@ async def transcribe_audio(audio_bytes: bytes, language: str = None) -> Optional
             audio_path = tmp_ogg_path
         
         try:
-            # Transcribe the audio
+            # Transcribe the audio using OpenAI Whisper
             with open(audio_path, "rb") as audio_file:
                 # Force transcription to English output (romanized)
-                # This ensures Hindi/Hinglish is transcribed as English letters, not Devanagari/Urdu
-                kwargs = {
-                    "file": audio_file,
-                    "model": "whisper-1",
-                    "response_format": "json",
-                    "temperature": 0.0,
-                    "language": "en",  # Force English output (will romanize Hindi/Hinglish)
-                    "prompt": "Transcribe this voice message in English letters only. The speaker may say Hindi words like: done, ho gaya, kar diya, later, baad mein, skip, remind me, yaad dilao, chhod do, abhi nahi. Use English/Roman letters only, no Devanagari or Urdu script."
-                }
+                response = await openai_client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    language="en",  # Force English transcription
+                    response_format="text"
+                )
                 
-                response = await stt.transcribe(**kwargs)
+                transcription = response.strip() if isinstance(response, str) else response
+                logger.info(f"Transcription result: {transcription}")
                 
-                transcribed_text = response.text.strip()
-                logger.info(f"Transcribed audio: '{transcribed_text}'")
-                return transcribed_text
+                # Clean up audio file
+                try:
+                    os.unlink(audio_path)
+                except:
+                    pass
                 
-        finally:
-            # Clean up temp file
-            if os.path.exists(audio_path):
+                return transcription
+                
+        except Exception as transcribe_error:
+            logger.error(f"Transcription failed: {transcribe_error}")
+            # Clean up
+            try:
                 os.unlink(audio_path)
+            except:
+                pass
+            return None
             
     except Exception as e:
-        logger.error(f"Error transcribing audio: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        logger.error(f"Error in transcribe_audio: {e}")
         return None
 
 
-def detect_voice_intent(transcribed_text: str) -> Dict:
+def normalize_hindi_to_english(text: str) -> str:
     """
-    Detect intent from transcribed voice message
-    Supports English, Hindi, and Hinglish phrases
-    
-    IMPORTANT: Only detect clear, standalone response intents.
-    If the message seems like a command/request (not a response), return "unknown"
-    so the AI can handle it properly.
+    Convert common Hindi/Hinglish phrases to English equivalents for intent detection
     
     Args:
-        transcribed_text: The transcribed text from voice note
+        text: Transcribed text that may contain Hindi words
     
     Returns:
-        Dict with 'intent' and 'confidence' keys
+        Text with Hindi phrases converted to English
     """
-    if not transcribed_text:
-        return {"intent": "unknown", "confidence": 0.0}
+    if not text:
+        return text
     
-    text_lower = transcribed_text.lower().strip()
-    words = text_lower.split()
+    # Common Hindi -> English mappings for reminder-related phrases
+    hindi_mappings = {
+        # Completion phrases
+        'ho gaya': 'done',
+        'hogaya': 'done',
+        'ho gya': 'done',
+        'hogya': 'done',
+        'kar diya': 'done',
+        'kardiya': 'done',
+        'kar liya': 'done',
+        'karliya': 'done',
+        'khatam': 'done',
+        'complete': 'done',
+        'finished': 'done',
+        'khatm ho gaya': 'done',
+        'ban gaya': 'done',
+        'mukammal': 'done',
+        
+        # Skip/Later phrases
+        'baad mein': 'later',
+        'baad me': 'later',
+        'thodi der baad': 'later',
+        'abhi nahi': 'later',
+        'rukho': 'wait',
+        'ruko': 'wait',
+        'skip karo': 'skip',
+        'chhod do': 'skip',
+        'chod do': 'skip',
+        'rehne do': 'skip',
+        'mat karo': 'skip',
+        
+        # Reminder phrases
+        'yaad dilao': 'remind',
+        'yaad dila do': 'remind',
+        'yaad dilana': 'remind',
+        'reminder set karo': 'set reminder',
+        'remind karo': 'remind',
+        
+        # Time-related
+        'kal': 'tomorrow',
+        'aaj': 'today',
+        'abhi': 'now',
+        'subah': 'morning',
+        'dopahar': 'afternoon',
+        'shaam': 'evening',
+        'raat': 'night',
+        'minute': 'minute',
+        'ghanta': 'hour',
+        'baje': 'o\'clock',
+        
+        # Family members
+        'mummy': 'mom',
+        'mummi': 'mom',
+        'maa': 'mom',
+        'papa': 'dad',
+        'pitaji': 'dad',
+        'dadi': 'grandma',
+        'nani': 'grandma',
+        'dada': 'grandpa',
+        'nana': 'grandpa',
+        'bhai': 'brother',
+        'behen': 'sister',
+        'beti': 'daughter',
+        'beta': 'son',
+        
+        # Common verbs
+        'karo': 'do',
+        'kar': 'do',
+        'lo': 'take',
+        'le': 'take',
+        'khao': 'eat',
+        'kha': 'eat',
+        'piyo': 'drink',
+        'pi': 'drink',
+        'jao': 'go',
+        'ja': 'go',
+        'bolo': 'tell',
+        'bol': 'tell',
+        
+        # Affirmations
+        'haan': 'yes',
+        'ha': 'yes',
+        'ji': 'yes',
+        'theek hai': 'okay',
+        'thik hai': 'okay',
+        'accha': 'okay',
+        'nahi': 'no',
+        'na': 'no',
+    }
     
-    # If the message is long (more than 5 words), it's likely a command, not a simple response
-    # Let the AI handle it
-    if len(words) > 6:
-        return {"intent": "unknown", "confidence": 0.0, "reason": "long_message", "transcription": transcribed_text}
+    text_lower = text.lower()
     
-    # Check if message contains command-like words - if so, let AI handle it
-    command_indicators = [
-        "remind", "yaad", "dilao", "set", "change", "karo", "baje", "time",
-        "morning", "evening", "subah", "shaam", "kal", "tomorrow", "today", "aaj"
-    ]
+    # Apply mappings
+    for hindi, english in hindi_mappings.items():
+        text_lower = text_lower.replace(hindi, english)
     
-    for indicator in command_indicators:
-        if indicator in text_lower:
-            return {"intent": "unknown", "confidence": 0.0, "reason": "contains_command_word", "transcription": transcribed_text}
+    return text_lower
+
+
+def is_voice_command_for_reminder_action(text: str) -> Tuple[bool, str]:
+    """
+    Check if voice command is for a reminder action (done/later/skip)
     
-    # ============== COMPLETED INTENT ==============
-    # Only match if these are the MAIN words, not part of a longer sentence
-    completed_exact = [
-        "done", "its done", "it's done", "finished", "completed", "complete",
-        "yes", "yep", "yeah", "yup", "ok", "okay",
-        "ho gaya", "hogaya", "ho gya", "hogya",
-        "kar diya", "kardiya", "kar dia", 
-        "kar liya", "karliya",
-        "kha liya", "khaliya", "le liya", "leliya",
-        "haan", "ha ji", "ji haan", "theek hai", "thik hai"
-    ]
+    Args:
+        text: Transcribed and normalized text
     
-    # ============== DEFER/LATER INTENT ==============
-    defer_exact = [
-        "later", "not now", "busy",
-        "baad mein", "baad me", "abhi nahi", "busy hoon"
-    ]
+    Returns:
+        Tuple of (is_action_command, action_type)
+    """
+    if not text:
+        return False, ""
     
-    # ============== SNOOZE INTENT ==============
-    snooze_exact = [
-        "snooze", "remind again", "remind later", "again",
-        "phir se", "dobara", "ek baar aur"
-    ]
+    text_lower = normalize_hindi_to_english(text.lower().strip())
     
-    # ============== SKIP INTENT ==============
-    skip_exact = [
-        "skip", "skip it", "no", "nope", "cancel", "ignore",
-        "chhoddo", "chhodo", "chod do", "nahi karna", "rehne do", "jane do"
-    ]
+    # Check for completion keywords
+    done_keywords = ['done', 'complete', 'finished', 'yes done', 'mark done', 'completed', 'i did it', 'all done']
+    for keyword in done_keywords:
+        if keyword in text_lower:
+            return True, 'done'
     
-    # Check for EXACT matches or very close matches
-    for phrase in completed_exact:
-        if text_lower == phrase or text_lower.startswith(phrase + " ") or text_lower.endswith(" " + phrase):
-            return {"intent": "completed", "confidence": 0.95, "matched_phrase": phrase}
+    # Check for later/snooze keywords
+    later_keywords = ['later', 'snooze', 'remind later', 'not now', 'wait', '10 minutes', 'remind me later']
+    for keyword in later_keywords:
+        if keyword in text_lower:
+            return True, 'later'
     
-    for phrase in snooze_exact:
-        if text_lower == phrase or phrase in text_lower:
-            return {"intent": "snooze", "confidence": 0.9, "matched_phrase": phrase}
+    # Check for skip keywords
+    skip_keywords = ['skip', 'cancel', 'ignore', 'not today', "don't remind", 'no thanks']
+    for keyword in skip_keywords:
+        if keyword in text_lower:
+            return True, 'skip'
     
-    for phrase in defer_exact:
-        if text_lower == phrase or phrase in text_lower:
-            return {"intent": "defer", "confidence": 0.85, "matched_phrase": phrase}
-    
-    for phrase in skip_exact:
-        # Be more careful with skip - only match exact phrases
-        if text_lower == phrase or text_lower == phrase + ".":
-            return {"intent": "skip", "confidence": 0.9, "matched_phrase": phrase}
-    
-    # No clear intent detected - let AI handle it
-    return {"intent": "unknown", "confidence": 0.0, "transcription": transcribed_text}
+    return False, ""
 
 
 async def process_voice_note(
     media_url: str,
-    twilio_account_sid: str,
-    twilio_auth_token: str
-) -> Tuple[Optional[str], Dict]:
+    twilio_auth: tuple
+) -> Dict:
     """
-    Full pipeline: Download -> Transcribe -> Detect Intent
+    Full voice note processing pipeline
     
     Args:
-        media_url: Twilio media URL for the voice note
-        twilio_account_sid: Twilio Account SID for authentication
-        twilio_auth_token: Twilio Auth Token for authentication
+        media_url: Twilio media URL
+        twilio_auth: (account_sid, auth_token)
     
     Returns:
-        Tuple of (transcribed_text, intent_dict)
+        Dict with transcription and detected intent
     """
-    # Step 1: Download the audio
-    auth = (twilio_account_sid, twilio_auth_token)
-    audio_bytes = await download_audio_file(media_url, auth)
+    result = {
+        "success": False,
+        "transcription": None,
+        "normalized_text": None,
+        "is_action_command": False,
+        "action_type": None,
+        "error": None
+    }
     
+    # Download audio
+    audio_bytes = await download_audio_file(media_url, twilio_auth)
     if not audio_bytes:
-        return None, {"intent": "error", "error": "Failed to download audio"}
+        result["error"] = "Failed to download audio"
+        return result
     
-    # Step 2: Transcribe
-    transcribed_text = await transcribe_audio(audio_bytes)
+    # Transcribe
+    transcription = await transcribe_audio(audio_bytes)
+    if not transcription:
+        result["error"] = "Failed to transcribe audio"
+        return result
     
-    if not transcribed_text:
-        return None, {"intent": "error", "error": "Failed to transcribe audio"}
+    result["transcription"] = transcription
     
-    # Step 3: Detect intent
-    intent_result = detect_voice_intent(transcribed_text)
-    intent_result["transcription"] = transcribed_text
+    # Normalize Hindi/Hinglish to English
+    normalized = normalize_hindi_to_english(transcription)
+    result["normalized_text"] = normalized
     
-    logger.info(f"Voice note processed: '{transcribed_text}' -> Intent: {intent_result['intent']}")
+    # Check for action commands
+    is_action, action_type = is_voice_command_for_reminder_action(normalized)
+    result["is_action_command"] = is_action
+    result["action_type"] = action_type
+    result["success"] = True
     
-    return transcribed_text, intent_result
+    return result
 
 
-def is_voice_command_for_reminder(transcribed_text: str) -> bool:
+def is_complex_voice_command(text: str) -> bool:
     """
-    Check if the transcribed text is a command to CREATE a reminder
-    (as opposed to responding to an existing reminder)
+    Check if the voice command is complex and should be sent to AI
+    rather than simple keyword matching.
+    
+    Complex commands include:
+    - Time corrections ("not 3, I said 9")
+    - Multiple instructions
+    - Context-dependent phrases
     
     Args:
-        transcribed_text: The transcribed text from voice note
+        text: Normalized transcription text
     
     Returns:
-        True if this looks like a command to create a reminder
+        True if command is complex
     """
-    if not transcribed_text:
+    if not text:
         return False
     
-    text_lower = transcribed_text.lower()
+    text_lower = text.lower()
     
-    # English command patterns
-    reminder_commands_en = [
-        "remind me", "remind myself", "set a reminder", "set reminder",
-        "remind my", "remind him", "remind her", "remind them",
-        "create a reminder", "make a reminder", "add a reminder",
-        "don't let me forget", "help me remember",
-        "remind us", "set an alarm", "set alarm"
+    # Patterns that indicate complex commands
+    complex_patterns = [
+        'not',  # Negation/correction
+        'i said',  # Correction
+        'i meant',  # Correction
+        'change',  # Modification
+        'actually',  # Correction
+        'instead',  # Change
+        'wrong',  # Error correction
+        'correct',  # Correction
+        'update',  # Modification
+        'modify',  # Modification
+        ' and ',  # Multiple instructions
+        ' then ',  # Sequential instructions
+        ' also ',  # Additional instructions
     ]
     
-    # Hindi command patterns
-    reminder_commands_hi = [
-        "yaad dilao", "yaad dila do", "yaad dilana",
-        "remind karo", "remind kar do", "reminder set karo",
-        "mujhe yaad", "hame yaad", "unhe yaad",
-        "bhulne mat dena", "bhoolne mat dena"
-    ]
-    
-    # Habit creation patterns
-    habit_commands = [
-        "i want to start", "i want to build", "help me build",
-        "create a habit", "set a habit", "daily habit",
-        "every day", "everyday", "har din", "roz", "rozana"
-    ]
-    
-    all_commands = reminder_commands_en + reminder_commands_hi + habit_commands
-    
-    for cmd in all_commands:
-        if cmd in text_lower:
+    for pattern in complex_patterns:
+        if pattern in text_lower:
             return True
     
     return False
