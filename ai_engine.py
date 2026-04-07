@@ -169,7 +169,7 @@ IMPORTANT - DETECTING INTENT:
 RESPONSE FORMAT:
 You must respond with a valid JSON object. Include these fields:
 {{
-    "intent": "set_reminder" | "remind_other" | "request_phone" | "provide_phone" | "habit_create" | "habit_check" | "habit_list" | "button_response" | "general_chat" | "cancel" | "stop_service",
+    "intent": "create_reminder" | "create_reminder_for_other" | "request_phone" | "provide_phone" | "habit_create" | "habit_check" | "habit_list" | "button_response" | "general_chat" | "cancel" | "stop_service" | "set_name" | "snooze_reminder" | "skip_reminder" | "list_reminders",
     "message": "the task or reminder message",
     "recipient_name": "self" or the person's name/relationship (e.g., "mom", "Dad", "grandma"),
     "recipient_phone": "+1234567890" (if provided, otherwise null),
@@ -200,7 +200,10 @@ User: "+919582790310"
 Response: {{"intent": "provide_phone", "recipient_phone": "+919582790310", "confidence": 0.98, "friendly_response": "Perfect! I've got the number. I'll make sure your dad gets his medicine reminders. 🌼"}}
 
 User: "Remind me to call mom at 6 PM"
-Response: {{"intent": "set_reminder", "message": "call mom", "recipient_name": "self", "scheduled_time": "[6 PM in user's timezone converted to UTC]", "recurrence": "once", "confidence": 0.95, "friendly_response": "I'll remind you to call your mom at 6 PM! It's lovely that you're staying connected. 💛"}}
+Response: {{"intent": "create_reminder", "message": "call mom", "recipient_name": "self", "scheduled_time": "[6 PM in user's timezone converted to UTC]", "recurrence": "once", "confidence": 0.95, "friendly_response": "I'll remind you to call your mom at 6 PM! It's lovely that you're staying connected. 💛"}}
+
+User: "Remind me in 5 minutes to check the oven"
+Response: {{"intent": "create_reminder", "message": "check the oven", "recipient_name": "self", "scheduled_time": "[current time + 5 minutes in UTC]", "recurrence": "once", "confidence": 0.95, "friendly_response": "Got it! I'll remind you to check the oven in 5 minutes. 🌼"}}
 """
 
 
