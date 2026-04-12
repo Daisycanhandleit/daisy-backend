@@ -1672,33 +1672,41 @@ async def whatsapp_webhook(
     wa_user = await db.whatsapp_users.find_one({"phone": from_phone}, {"_id": 0})
     
     # Privacy Policy and Consent Message - Warm, Family-Focused
-    PRIVACY_CONSENT_MESSAGE = """🌼 *Hello there! I'm Daisy*
+    PRIVACY_CONSENT_MESSAGE = """🌼 *Hello! I'm Daisy* — your AI-powered life concierge.
 
-I'm so glad you reached out! I'm here to help you and your family stay connected and never miss the things that matter most.
+*Important:* I'm an artificial intelligence (AI), not a human. I'm operated by *Daisy Can Handle It Pty Ltd*, an Australian business.
 
-*💛 What I Can Help You With:*
-• Gentle reminders for you and your loved ones
-• Helping you remember important moments (medicine times, appointments, check-ins)
-• Building healthy daily habits together
-• Making sure nobody in your family feels forgotten
+*What I collect to help you:*
+• Your name and phone number
+• Messages you send me
+• Reminders and preferences you set
+• Contact details for people you want to remind
 
-*🔒 How I Keep Your Trust:*
-I treat your family's information like my own:
-• Your messages help me understand how to help you better
-• I remember your loved ones' names and preferences
-• Everything stays private - I never share your family's data
-• You can ask me to forget everything anytime (just say "Delete my data")
+*Why I collect this:*
+To provide you with reminder and habit tracking services via WhatsApp.
 
-*📄 Full Privacy Policy:*
-https://caregiver-app-14.preview.emergentagent.com/privacy
+*Data processing:*
+Your data may be processed by AI providers in the USA (OpenAI) and stored securely on cloud servers. See our full Privacy Policy for details.
 
-*To start our journey together:*
-Reply *AGREE* if you're comfortable with me being part of your family's care
-Reply *DECLINE* if you'd prefer not to - no hard feelings! 💛"""
+*Your rights:*
+• Access, correct, or delete your data anytime
+• Opt out by replying *STOP* to any message
+• Lodge a complaint with the OAIC if needed
+
+📄 *Privacy Policy:* https://daisycanhandleit.com/privacy
+📄 *Terms & Conditions:* https://daisycanhandleit.com/terms
+
+*To continue:*
+Reply *AGREE* to accept these terms and start using Daisy.
+Reply *DECLINE* if you'd prefer not to.
+
+By continuing, you consent to these terms. 💛"""
 
     RECIPIENT_CONSENT_UPGRADE_MESSAGE = """🌼 *Hi there!*
 
 I've noticed you've been receiving caring reminders from your family and friends through me - and I'm so happy I could help keep you connected!
+
+*Note:* I'm Daisy, an AI assistant (not a human), operated by Daisy Can Handle It Pty Ltd.
 
 Would you like to use me yourself to:
 • 💛 Send gentle reminders to YOUR loved ones
@@ -1707,7 +1715,9 @@ Would you like to use me yourself to:
 
 *Start your FREE 30-day trial* by replying *START TRIAL*
 
-Or keep receiving reminders for free - I'm always here either way! 🌸"""
+Or keep receiving reminders for free - I'm always here either way! 🌸
+
+📄 Privacy: https://daisycanhandleit.com/privacy"""
 
     # Helper to detect if message is a recipient response vs user intent
     def is_recipient_response(message_text):

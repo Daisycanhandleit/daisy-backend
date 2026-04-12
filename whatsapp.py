@@ -406,30 +406,29 @@ I couldn't confirm if this was completed. I'll check again tomorrow if needed.""
 
 async def send_consent_request(to_phone: str, requester_name: str, reminder_description: str) -> Optional[str]:
     """Send a consent request message to a new contact (recipient)"""
-    message = f"""🌼 *Hello! I'm Daisy*
+    message = f"""🌼 *Hello! I'm Daisy* — an AI-powered reminder assistant.
 
-Someone who cares about you has reached out to me! 💛
+*Important:* I'm an artificial intelligence (AI), not a human. I'm operated by *Daisy Can Handle It Pty Ltd*, an Australian business.
 
-*{requester_name}* would love my help to send you gentle reminders, starting with:
+*{requester_name}* would like me to send you gentle reminders, starting with:
 📝 "{reminder_description}"
 
-*Why this matters:*
-{requester_name} wants to make sure you never miss important things - it's their way of showing they care! I'll be the friendly messenger who helps you both stay connected.
+*What this means:*
+• {requester_name} sets reminders for you through me
+• I'll message you at the scheduled times
+• This is completely *FREE* for you
 
-*How it works:*
-• {requester_name} sets caring reminders for you
-• I deliver them gently and follow up
-• This is completely *FREE* for you - always!
+*Your data:*
+• I'll store your phone number and reminder details
+• Your data may be processed by AI providers (USA)
+• Privacy Policy: https://daisycanhandleit.com/privacy
 
-*Your comfort first:*
-• Only {requester_name} can send you reminders through me
-• Your information stays private
-• You can stop anytime by saying "Stop"
-
-Reply *YES* to let me help {requester_name} care for you
+*Your choices:*
+Reply *YES* to receive reminders from {requester_name}
 Reply *NO* if you'd prefer not to
+Reply *STOP* anytime to opt out
 
-Whatever you choose, take care! 🌸"""
+Take care! 🌸"""
 
     return await send_whatsapp_message(to_phone, message)
 
