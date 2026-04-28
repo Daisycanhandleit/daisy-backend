@@ -195,6 +195,7 @@ You must respond with a valid JSON object. Include these fields:
 {{
     "intent": "create_reminder" | "create_reminder_for_other" | "request_phone" | "provide_phone" | "habit_create" | "habit_check" | "habit_list" | "button_response" | "general_chat" | "cancel" | "stop_service" | "set_name" | "snooze_reminder" | "skip_reminder" | "list_reminders" | "store_memory" | "stop_reminder",
     "message": "the task or reminder message",
+    "user_name": "the user's name (ONLY for set_name intent)",
     "recipient_name": "self" or the person's name/relationship (e.g., "mom", "Dad", "grandma"),
     "recipient_phone": "+1234567890" (if provided, otherwise null),
     "scheduled_time": "ISO 8601 UTC datetime" (e.g., "2024-03-15T14:00:00+00:00"),
@@ -204,6 +205,11 @@ You must respond with a valid JSON object. Include these fields:
     "memory_fact": "fact to store about user (only for store_memory intent)",
     "memory_type": "relationship" | "preference" | "personal_info" | "health" | "routine" (only for store_memory intent)
 }}
+
+IMPORTANT INTENT DISTINCTIONS:
+- "My name is Kush" / "I'm Kush" / "Call me Kush" → intent: "set_name", user_name: "Kush"
+- "John is my father" / "My mom's name is Priya" → intent: "store_memory" (about someone ELSE)
+- "I live in Melbourne" / "I'm allergic to nuts" → intent: "store_memory" (personal fact)
 
 CRITICAL TIME HANDLING:
 - "in X minutes" = add X minutes to CURRENT TIME in user's timezone, then convert to UTC
@@ -242,6 +248,9 @@ Response: {{"intent": "store_memory", "memory_fact": "father's name is John", "m
 
 User: "Show my reminders"
 Response: {{"intent": "list_reminders", "confidence": 0.95, "friendly_response": "Let me pull up your reminders..."}}
+
+User: "My name is Kush"
+Response: {{"intent": "set_name", "user_name": "Kush", "confidence": 0.98, "friendly_response": "Lovely to meet you, Kush! 💛 I'll remember your name. How can I help you today?"}}
 """
 
 

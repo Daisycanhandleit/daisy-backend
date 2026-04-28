@@ -2098,8 +2098,17 @@ Take your time - I'll be here when you're ready! 🌼"""
     
     elif parsed.get('intent') == 'set_name':
         # User wants to set their name
-        new_name = parsed.get('user_name', '').strip()
-        if new_name:
+        # Try multiple fields where AI might put the name
+        new_name = (parsed.get('user_name') or parsed.get('message') or parsed.get('recipient_name') or '').strip()
+        # Clean up common prefixes the AI might include
+        for prefix in ['my name is ', 'i am ', "i'm ", 'call me ', 'name: ']:
+            if new_name.lower().startswith(prefix):
+                new_name = new_name[len(prefix):].strip()
+        # Remove quotes if present
+        new_name = new_name.strip('"\'')
+        
+        if new_name and new_name.lower() not in ('self', 'someone', ''):
+            now_str = serialize_datetime(datetime.now(timezone.utc))
             now_str = serialize_datetime(datetime.now(timezone.utc))
             
             # Store in whatsapp_users collection
