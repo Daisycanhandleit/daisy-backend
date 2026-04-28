@@ -267,15 +267,7 @@ async def parse_user_message(
     Returns:
         Parsed intent dictionary
     """
-    if not openai_client:
-        logger.error("OpenAI client not initialized - missing API key")
-        return {
-            "intent": "general_chat",
-            "confidence": 0.5,
-            "friendly_response": "I'm having a little trouble right now. Could you try again? 🌼"
-        }
-    
-    # Check for quick phone number input first
+    # Check for quick phone number input FIRST (works even without OpenAI)
     if is_likely_phone_input(user_message):
         phone = extract_phone_number_regex(user_message)
         if phone:
@@ -285,6 +277,14 @@ async def parse_user_message(
                 "confidence": 0.95,
                 "friendly_response": f"Got it! I have the number {phone}. 🌼"
             }
+    
+    if not openai_client:
+        logger.error("OpenAI client not initialized - missing API key")
+        return {
+            "intent": "general_chat",
+            "confidence": 0.5,
+            "friendly_response": "I'm having a little trouble right now. Could you try again? 🌼"
+        }
     
     # Detect user timezone from phone number
     user_timezone = detect_timezone_from_phone(user_phone)
