@@ -40,7 +40,7 @@ from whatsapp import (
     send_follow_up_message, send_acknowledgment_to_creator,
     send_team_reminder_message, send_team_join_notification
 )
-from ai_engine import parse_user_message, generate_response
+from ai_engine import parse_user_message, generate_response, is_likely_phone_input
 from scheduler import start_scheduler, stop_scheduler
 import pytz
 
@@ -1880,8 +1880,14 @@ I can send you a *Morning Agenda* with your day's tasks and an *Evening Wrap-up*
 • "Set up my morning agenda at 7am"
 • "Send me evening wrap-up at 9pm"
 
-*First things first - what's your name?* 
-(So I can make our conversations more personal 💛)"""
+*But first — what should I call you?* 💛
+(Just type your name, like "Kush" or "Priya")"""
+            
+            # Set awaiting_name flag so next message is treated as name
+            await db.whatsapp_users.update_one(
+                {"phone": from_phone},
+                {"$set": {"awaiting_name": True}}
+            )
             
             if is_twilio_configured():
                 await send_whatsapp_message(from_phone, welcome_msg)
@@ -1968,6 +1974,73 @@ Take your time - I'll be here when you're ready! 🌼"""
         )
     
     # ============== END ONBOARDING FLOW ==============
+    
+    # ============== AWAITING NAME CHECK ==============
+    # If Daisy just asked for their name (after consent), treat short non-command messages as names
+    if wa_user and wa_user.get('awaiting_name'):
+        body_stripped = Body.strip()
+        body_lower = body_stripped.lower()
+        
+        # Check if this looks like a name (short text, not a command)
+        is_command = any(kw in body_lower for kw in [
+            'remind', 'set ', 'create', 'help', 'stop', 'cancel', 'skip', 'done',
+            'later', 'snooze', 'habit', 'show', 'list', 'what ', 'how ', 'when ',
+            'morning agenda', 'evening wrap', 'start trial'
+        ])
+        
+        # If it's short (likely a name) and not a command, treat as name
+        if len(body_stripped) <= 30 and not is_command and not is_likely_phone_input(body_stripped):
+            # Clean the name - handle "My name is X", "I'm X", "Call me X"
+            name = body_stripped
+            for prefix in ['my name is ', "i'm ", 'i am ', 'call me ', 'its ', "it's ", 'name is ']:
+                if name.lower().startswith(prefix):
+                    name = name[len(prefix):].strip()
+            name = name.strip('"\'.,!').strip()
+            
+            if name and len(name) >= 2:
+                now_str = serialize_datetime(datetime.now(timezone.utc))
+                
+                # Store the name
+                await db.whatsapp_users.update_one(
+                    {"phone": from_phone},
+                    {"$set": {
+                        "name": name,
+                        "awaiting_name": False,
+                        "updated_at": now_str
+                    }}
+                )
+                
+                # Also update web users if they have an account
+                await db.users.update_one(
+                    {"phone": from_phone},
+                    {"$set": {"name": name, "updated_at": now_str}}
+                )
+                
+                # Send warm personalized welcome
+                welcome_response = f"Lovely to meet you, {name}! 💛\n\nI'll always call you {name} from now on. I'm Daisy, and I'm here whenever you need me.\n\nJust tell me what you'd like — set a reminder, build a habit, or care for someone you love. 🌼\n\n— Daisy"
+                
+                # Store outgoing message
+                out_message = Message(
+                    direction="outgoing",
+                    from_phone=to_phone,
+                    to_phone=from_phone,
+                    content=welcome_response
+                )
+                out_dict = out_message.model_dump()
+                out_dict['created_at'] = serialize_datetime(out_dict['created_at'])
+                await db.messages.insert_one(out_dict)
+                
+                if is_twilio_configured():
+                    await send_whatsapp_message(from_phone, welcome_response)
+                
+                logger.info(f"Stored name '{name}' for {from_phone} via awaiting_name flow")
+                return ""
+        
+        # If they sent a command instead of a name, clear the flag and continue normal processing
+        await db.whatsapp_users.update_one(
+            {"phone": from_phone},
+            {"$set": {"awaiting_name": False}}
+        )
     
     # Check if user exists
     user = await db.users.find_one({"phone": from_phone}, {"_id": 0})
@@ -2061,7 +2134,13 @@ Take your time - I'll be here when you're ready! 🌼"""
                     {"$set": {"status": "pending"}}
                 )
                 
-                response_text = parsed.get('friendly_response', "Thank you for approving! 🌼 I'll start sending you reminders as scheduled. You can reply STOP anytime to opt out.")
+                # Set awaiting_name flag so next message is treated as name
+                await db.whatsapp_users.update_one(
+                    {"phone": from_phone},
+                    {"$set": {"awaiting_name": True}}
+                )
+                
+                response_text = "Thank you for approving! 🌼 I'll start sending you reminders as scheduled.\n\n*By the way — what should I call you?* 💛\n(Just type your name, like \"Kush\" or \"Priya\")\n\nYou can reply STOP anytime to opt out."
                 
                 # Notify the creator that consent was given
                 if contact.get('user_id'):
