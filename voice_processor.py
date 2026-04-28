@@ -94,11 +94,10 @@ async def transcribe_audio(audio_bytes: bytes, language: str = None) -> Optional
         try:
             # Transcribe the audio using OpenAI Whisper
             with open(audio_path, "rb") as audio_file:
-                # Force transcription to English output (romanized)
+                # Let Whisper auto-detect language for better Hindi/Hinglish support
                 response = await openai_client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file,
-                    language="en",  # Force English transcription
                     response_format="text"
                 )
                 
@@ -277,52 +276,72 @@ def is_voice_command_for_reminder_action(text: str) -> Tuple[bool, str]:
 
 async def process_voice_note(
     media_url: str,
-    twilio_auth: tuple
-) -> Dict:
+    twilio_account_sid: str = None,
+    twilio_auth_token: str = None,
+    twilio_auth: tuple = None
+) -> Tuple[Optional[str], Optional[Dict]]:
     """
-    Full voice note processing pipeline
+    Full voice note processing pipeline.
     
     Args:
         media_url: Twilio media URL
-        twilio_auth: (account_sid, auth_token)
+        twilio_account_sid: Twilio Account SID
+        twilio_auth_token: Twilio Auth Token
+        twilio_auth: Alternative tuple of (account_sid, auth_token)
     
     Returns:
-        Dict with transcription and detected intent
+        Tuple of (transcription_text, intent_dict) or (None, None) on failure
     """
-    result = {
-        "success": False,
-        "transcription": None,
-        "normalized_text": None,
-        "is_action_command": False,
-        "action_type": None,
-        "error": None
-    }
+    # Build auth tuple from either format
+    if twilio_auth is None:
+        if twilio_account_sid and twilio_auth_token:
+            twilio_auth = (twilio_account_sid, twilio_auth_token)
+        else:
+            logger.error("No Twilio credentials provided for voice processing")
+            return None, None
     
     # Download audio
     audio_bytes = await download_audio_file(media_url, twilio_auth)
     if not audio_bytes:
-        result["error"] = "Failed to download audio"
-        return result
+        logger.error("Failed to download voice audio")
+        return None, None
     
     # Transcribe
     transcription = await transcribe_audio(audio_bytes)
     if not transcription:
-        result["error"] = "Failed to transcribe audio"
-        return result
+        logger.error("Failed to transcribe voice audio")
+        return None, None
     
-    result["transcription"] = transcription
+    logger.info(f"Voice transcription: {transcription}")
     
     # Normalize Hindi/Hinglish to English
     normalized = normalize_hindi_to_english(transcription)
-    result["normalized_text"] = normalized
     
-    # Check for action commands
+    # Check for action commands (done/later/skip)
     is_action, action_type = is_voice_command_for_reminder_action(normalized)
-    result["is_action_command"] = is_action
-    result["action_type"] = action_type
-    result["success"] = True
     
-    return result
+    if is_action:
+        # Map to Daisy's intent system
+        intent_mapping = {
+            'done': 'completed',
+            'later': 'defer',
+            'skip': 'skip'
+        }
+        intent = {
+            'intent': intent_mapping.get(action_type, action_type),
+            'confidence': 0.9,
+            'action_type': action_type
+        }
+        return transcription, intent
+    
+    # Not a simple action command - return transcription for AI parsing
+    return transcription, None
+
+
+# Alias for backwards compatibility
+def is_voice_command_for_reminder(text: str) -> Tuple[bool, str]:
+    """Alias for is_voice_command_for_reminder_action"""
+    return is_voice_command_for_reminder_action(text)
 
 
 def is_complex_voice_command(text: str) -> bool:

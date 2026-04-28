@@ -42,6 +42,7 @@ from whatsapp import (
 )
 from ai_engine import parse_user_message, generate_response
 from scheduler import start_scheduler, stop_scheduler
+import pytz
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -1595,6 +1596,30 @@ async def whatsapp_webhook(
                         if extracted_name:
                             logger.info(f"Contact name from vCard: {extracted_name}")
                         
+                        # Store relationship in user memory when contact is shared via vCard
+                        # This links the shared contact to the user's memory
+                        pending = await db.pending_reminders.find_one({"user_phone": from_phone}, {"_id": 0})
+                        relationship_name = pending.get('recipient_name', '') if pending else ''
+                        contact_label = extracted_name or relationship_name or 'contact'
+                        
+                        if contact_label and contact_label.lower() not in ('contact', 'someone', ''):
+                            memory_fact = f"{contact_label}'s phone number is {extracted_phone} (shared via WhatsApp contact card)"
+                            existing_mem = await db.user_memory.find_one({
+                                "user_phone": from_phone,
+                                "fact": {"$regex": extracted_phone.replace('+', '\\+')}
+                            }, {"_id": 0})
+                            if not existing_mem:
+                                await db.user_memory.insert_one({
+                                    "id": str(uuid.uuid4()),
+                                    "user_phone": from_phone,
+                                    "fact": memory_fact,
+                                    "memory_type": "relationship",
+                                    "source_message": "contact card shared via WhatsApp",
+                                    "created_at": serialize_datetime(datetime.now(timezone.utc)),
+                                    "updated_at": serialize_datetime(datetime.now(timezone.utc))
+                                })
+                                logger.info(f"Stored vCard relationship memory: {memory_fact}")
+                        
             except Exception as e:
                 logger.error(f"Error parsing vCard: {e}")
                 import traceback
@@ -1619,7 +1644,7 @@ async def whatsapp_webhook(
                 twilio_auth_token = os.environ.get("TWILIO_AUTH_TOKEN")
                 
                 if MediaUrl0 and twilio_account_sid and twilio_auth_token:
-                    # Process the voice note
+                    # Process the voice note - returns (transcription, intent_dict_or_None)
                     voice_transcription, voice_intent = await process_voice_note(
                         media_url=MediaUrl0,
                         twilio_account_sid=twilio_account_sid,
@@ -1974,6 +1999,12 @@ Take your time - I'll be here when you're ready! 🌼"""
             "consent_status": contact.get('consent_status')
         }
     
+    # Fetch user memory for personalization
+    user_memories = await db.user_memory.find(
+        {"user_phone": from_phone},
+        {"_id": 0}
+    ).sort("created_at", -1).to_list(30)
+    
     # Parse the message with AI (pass user phone and contacts context)
     # BUT if we have a clear voice intent, use that directly instead of AI parsing
     
@@ -2002,7 +2033,8 @@ Take your time - I'll be here when you're ready! 🌼"""
             user_context={
                 "user_name": user_name,
                 "contacts": contacts_context
-            }
+            },
+            user_memory=user_memories
         )
     logger.info(f"Parsed intent: {parsed}")
     
@@ -2091,6 +2123,57 @@ Take your time - I'll be here when you're ready! 🌼"""
             logger.info(f"Stored user name '{new_name}' for phone {from_phone}")
         else:
             response_text = "I didn't catch your name. Could you tell me again? 🌼"
+    
+    elif parsed.get('intent') == 'store_memory':
+        # User shared personal information - store it in user_memory collection
+        memory_fact = parsed.get('memory_fact', '').strip()
+        memory_type = parsed.get('memory_type', 'personal_info')
+        
+        if memory_fact:
+            now_str = serialize_datetime(datetime.now(timezone.utc))
+            
+            # Check if similar memory already exists (avoid duplicates)
+            existing = await db.user_memory.find_one({
+                "user_phone": from_phone,
+                "fact": memory_fact
+            }, {"_id": 0})
+            
+            if not existing:
+                memory_entry = {
+                    "id": str(uuid.uuid4()),
+                    "user_phone": from_phone,
+                    "fact": memory_fact,
+                    "memory_type": memory_type,
+                    "source_message": Body,
+                    "created_at": now_str,
+                    "updated_at": now_str
+                }
+                await db.user_memory.insert_one(memory_entry)
+                logger.info(f"Stored memory for {from_phone}: {memory_fact} (type: {memory_type})")
+            
+            # If it's a relationship memory with a phone number context, also try to link
+            if memory_type == 'relationship' and extracted_phone and extracted_name:
+                # User shared a contact card with relationship context - store the relationship
+                relationship_fact = f"{extracted_name}'s phone is {extracted_phone} (shared via contact card)"
+                existing_rel = await db.user_memory.find_one({
+                    "user_phone": from_phone,
+                    "fact": {"$regex": extracted_phone}
+                }, {"_id": 0})
+                
+                if not existing_rel:
+                    await db.user_memory.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "user_phone": from_phone,
+                        "fact": relationship_fact,
+                        "memory_type": "relationship",
+                        "source_message": "contact card shared",
+                        "created_at": now_str,
+                        "updated_at": now_str
+                    })
+            
+            response_text = parsed.get('friendly_response', "Got it! I'll remember that. 💛")
+        else:
+            response_text = parsed.get('friendly_response', "I'll keep that in mind! 🌼")
     
     elif parsed.get('intent') == 'acknowledge':
         # Handle acknowledgment - check individual, team, and multi-time reminders
@@ -2359,6 +2442,12 @@ Take your time - I'll be here when you're ready! 🌼"""
                 }}
             )
             
+            # CRITICAL: For recurring reminders, schedule the next occurrence
+            if reminder.get('recurrence') and reminder['recurrence'] != 'once':
+                from scheduler import schedule_next_occurrence
+                await schedule_next_occurrence(reminder)
+                logger.info(f"Recurring reminder {reminder['id']} skipped but next occurrence scheduled")
+            
             # Voice-specific response
             if parsed.get('from_voice'):
                 response_text = "Okay, I heard you. Skipping this one! No pressure. 💛"
@@ -2417,6 +2506,86 @@ Take your time - I'll be here when you're ready! 🌼"""
         
         if not found_reminder:
             response_text = "I don't have any active reminders for you to skip. Let me know if you need anything! 🌼"
+    
+    # ============== CANCEL/STOP REMINDER HANDLER ==============
+    elif parsed.get('intent') == 'cancel' or parsed.get('intent') == 'stop_reminder':
+        # User wants to stop/cancel a specific reminder
+        now = datetime.now(timezone.utc)
+        cancel_message = parsed.get('message', '').lower().strip()
+        
+        # Find active reminders for this user (both as creator and recipient)
+        user_id = user['id'] if user else f"whatsapp_{from_phone}"
+        active_reminders = await db.reminders.find({
+            "$or": [
+                {"creator_phone": from_phone},
+                {"recipient_phone": from_phone}
+            ],
+            "status": {"$in": ["pending", "sent", "snoozed"]}
+        }, {"_id": 0}).sort("scheduled_time", 1).to_list(20)
+        
+        if not active_reminders:
+            response_text = "You don't have any active reminders to stop. 🌼"
+        elif len(active_reminders) == 1:
+            # Only one active reminder - cancel it directly
+            rem = active_reminders[0]
+            await db.reminders.update_one(
+                {"id": rem['id']},
+                {"$set": {
+                    "status": "cancelled",
+                    "cancelled_at": serialize_datetime(now),
+                    "updated_at": serialize_datetime(now)
+                }}
+            )
+            recurrence_note = f" (was {rem.get('recurrence', 'once')})" if rem.get('recurrence') and rem['recurrence'] != 'once' else ""
+            response_text = f"Done! I've stopped the reminder: \"{rem['message']}\"{recurrence_note}. It won't come back. 🌼"
+            logger.info(f"Cancelled reminder {rem['id']}")
+        else:
+            # Multiple active reminders - try to match by message content
+            matched_reminder = None
+            if cancel_message:
+                for rem in active_reminders:
+                    rem_msg = rem.get('message', '').lower()
+                    if cancel_message in rem_msg or rem_msg in cancel_message:
+                        matched_reminder = rem
+                        break
+            
+            if matched_reminder:
+                await db.reminders.update_one(
+                    {"id": matched_reminder['id']},
+                    {"$set": {
+                        "status": "cancelled",
+                        "cancelled_at": serialize_datetime(now),
+                        "updated_at": serialize_datetime(now)
+                    }}
+                )
+                recurrence_note = f" (was {matched_reminder.get('recurrence', 'once')})" if matched_reminder.get('recurrence') and matched_reminder['recurrence'] != 'once' else ""
+                response_text = f"Done! I've stopped: \"{matched_reminder['message']}\"{recurrence_note}. 🌼"
+                logger.info(f"Cancelled matched reminder {matched_reminder['id']}")
+            else:
+                # Can't determine which one - show list and ask
+                user_tz_name = parsed.get('user_timezone', 'Australia/Melbourne')
+                try:
+                    import pytz
+                    user_tz = pytz.timezone(user_tz_name)
+                except Exception:
+                    user_tz = pytz.UTC
+                
+                list_msg = "I have multiple active reminders. Which one do you want to stop?\n\n"
+                for i, rem in enumerate(active_reminders[:8], 1):
+                    try:
+                        time_dt = deserialize_datetime(rem['scheduled_time'])
+                        local_dt = time_dt.astimezone(user_tz)
+                        time_str = local_dt.strftime('%I:%M %p')
+                    except Exception:
+                        time_str = "Scheduled"
+                    recurrence_label = f" ({rem['recurrence']})" if rem.get('recurrence') and rem['recurrence'] != 'once' else ""
+                    recipient = ""
+                    if rem.get('recipient_name') and rem['recipient_name'] != 'self':
+                        recipient = f" → {rem['recipient_name']}"
+                    list_msg += f"{i}. {rem['message'][:35]}{recipient} — {time_str}{recurrence_label}\n"
+                
+                list_msg += "\nReply with the number or describe which one to stop."
+                response_text = list_msg
     
     elif parsed.get('intent') == 'create_reminder':
         # Handle reminder creation from WhatsApp
@@ -2682,6 +2851,25 @@ Take your time - I'll be here when you're ready! 🌼"""
             
             # Clear the pending reminder
             await db.pending_reminders.delete_one({"user_phone": from_phone})
+            
+            # Store relationship in user memory for future reference
+            if recipient_name and recipient_name.lower() not in ('contact', 'someone'):
+                memory_fact = f"{recipient_name}'s phone number is {recipient_phone}"
+                existing_mem = await db.user_memory.find_one({
+                    "user_phone": from_phone,
+                    "fact": {"$regex": recipient_phone}
+                }, {"_id": 0})
+                if not existing_mem:
+                    await db.user_memory.insert_one({
+                        "id": str(uuid.uuid4()),
+                        "user_phone": from_phone,
+                        "fact": memory_fact,
+                        "memory_type": "relationship",
+                        "source_message": f"Provided phone for {recipient_name}",
+                        "created_at": serialize_datetime(datetime.now(timezone.utc)),
+                        "updated_at": serialize_datetime(datetime.now(timezone.utc))
+                    })
+                    logger.info(f"Stored relationship memory: {memory_fact} for {from_phone}")
         else:
             response_text = parsed.get('friendly_response', "Thanks for the number! What would you like me to remind them about?")
     
@@ -3902,17 +4090,70 @@ Try: "I want to build a habit of reading every day at 9 PM" """)
         response_text = parsed.get('friendly_response', "Hi! I'm Daisy 🌼 I can help you set reminders. Just tell me what you'd like to be reminded about!")
     
     elif parsed.get('intent') == 'list_reminders':
-        # Show pending reminders for this user
+        # Show active reminders for this user with clear formatting
+        user_id = user['id'] if user else f"whatsapp_{from_phone}"
         reminders = await db.reminders.find(
-            {"$or": [{"creator_id": user['id'] if user else ""}, {"recipient_phone": from_phone}], "status": "pending"},
+            {
+                "$or": [
+                    {"creator_phone": from_phone},
+                    {"recipient_phone": from_phone}
+                ],
+                "status": {"$in": ["pending", "sent", "snoozed"]}
+            },
             {"_id": 0}
-        ).to_list(5)
+        ).sort("scheduled_time", 1).to_list(10)
         
         if reminders:
-            reminder_list = "\n".join([f"• {r['message']} at {r['scheduled_time']}" for r in reminders[:5]])
-            response_text = f"Here are your upcoming reminders:\n{reminder_list}\n\n🌼"
+            user_tz_name = parsed.get('user_timezone', 'Australia/Melbourne')
+            try:
+                import pytz
+                user_tz = pytz.timezone(user_tz_name)
+            except Exception:
+                user_tz = pytz.UTC
+            
+            response_text = "📋 *Your Active Reminders:*\n\n"
+            for i, r in enumerate(reminders, 1):
+                # Format time
+                try:
+                    time_dt = deserialize_datetime(r['scheduled_time'])
+                    local_dt = time_dt.astimezone(user_tz)
+                    time_str = local_dt.strftime('%I:%M %p')
+                    date_str = local_dt.strftime('%a, %b %d')
+                except Exception:
+                    time_str = "TBD"
+                    date_str = ""
+                
+                # Recurrence label
+                recurrence = r.get('recurrence', 'once')
+                if recurrence == 'daily':
+                    freq_label = "Daily"
+                elif recurrence == 'weekly':
+                    freq_label = "Weekly"
+                elif recurrence == 'monthly':
+                    freq_label = "Monthly"
+                else:
+                    freq_label = "One-time"
+                
+                # Status emoji
+                status = r.get('status', 'pending')
+                if status == 'sent':
+                    status_label = "Sent, awaiting response"
+                elif status == 'snoozed':
+                    status_label = "Snoozed"
+                else:
+                    status_label = "Active"
+                
+                # Recipient info
+                recipient = ""
+                if r.get('recipient_name') and r['recipient_name'] != 'self':
+                    recipient = f" → _{r['recipient_name']}_"
+                
+                response_text += f"*{i}. {r['message']}*{recipient}\n"
+                response_text += f"   ⏰ {time_str} {date_str} | {freq_label} | {status_label}\n\n"
+            
+            response_text += "_To stop a reminder, say \"Stop [reminder name]\"_\n\n— Daisy 💛"
         else:
-            response_text = "You don't have any pending reminders. Want me to set one? 🌼"
+            response_text = "You don't have any active reminders right now. Want me to set one? 🌼"
     
     else:
         # Unknown intent - use AI's friendly response or generate one

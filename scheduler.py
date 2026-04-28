@@ -446,14 +446,27 @@ async def check_and_send_followups():
                 )
                 logger.info(f"Reminder {reminder['id']} marked as missed (no response after follow-ups)")
                 
+                # CRITICAL: For recurring reminders, still schedule the next occurrence
+                if reminder.get('recurrence') and reminder['recurrence'] != 'once':
+                    await schedule_next_occurrence(reminder)
+                    logger.info(f"Recurring reminder {reminder['id']} missed but next occurrence scheduled")
+                
         except Exception as e:
             logger.error(f"Error marking reminder as missed: {e}")
 
 
 async def schedule_next_occurrence(reminder):
-    """Create the next occurrence for a recurring reminder"""
+    """Create the next occurrence for a recurring reminder.
+    
+    For reminders that are still 'sent' (just completed normally), we update in-place.
+    For reminders that are 'skipped' or 'missed', we create a new document to preserve history.
+    """
     try:
-        current_time = datetime.fromisoformat(reminder['scheduled_time'].replace('Z', '+00:00'))
+        scheduled_time_str = reminder.get('scheduled_time')
+        if not scheduled_time_str:
+            return
+            
+        current_time = datetime.fromisoformat(scheduled_time_str.replace('Z', '+00:00')) if isinstance(scheduled_time_str, str) else scheduled_time_str
         
         if reminder['recurrence'] == 'daily':
             next_time = current_time + timedelta(days=1)
@@ -468,18 +481,48 @@ async def schedule_next_occurrence(reminder):
         if reminder.get('end_date'):
             end_date = datetime.fromisoformat(reminder['end_date'].replace('Z', '+00:00'))
             if next_time > end_date:
+                logger.info(f"Recurring reminder {reminder['id']} passed end_date, not scheduling next")
                 return
         
-        # Update the reminder with next scheduled time and reset status
-        await db.reminders.update_one(
-            {"id": reminder['id']},
-            {"$set": {
+        # If the reminder is in a terminal state (skipped/missed/acknowledged), 
+        # create a NEW reminder document to preserve history
+        current_status = reminder.get('status', '')
+        if current_status in ('skipped', 'missed', 'acknowledged'):
+            import uuid
+            new_id = str(uuid.uuid4())
+            new_reminder = {
+                "id": new_id,
+                "creator_id": reminder.get('creator_id'),
+                "creator_phone": reminder.get('creator_phone'),
+                "creator_name": reminder.get('creator_name'),
+                "message": reminder.get('message'),
                 "scheduled_time": serialize_datetime(next_time),
-                "status": "pending"
-            }}
-        )
-        
-        logger.info(f"Scheduled next occurrence of {reminder['id']} for {next_time}")
+                "recipient_phone": reminder.get('recipient_phone'),
+                "recipient_name": reminder.get('recipient_name'),
+                "recipient_relationship": reminder.get('recipient_relationship'),
+                "recurrence": reminder.get('recurrence'),
+                "end_date": reminder.get('end_date'),
+                "follow_up_intervals": reminder.get('follow_up_intervals', [10, 30]),
+                "status": "pending",
+                "follow_up_count": 0,
+                "created_at": reminder.get('created_at'),  # Keep original creation date
+                "updated_at": serialize_datetime(datetime.now(timezone.utc))
+            }
+            # Remove None values
+            new_reminder = {k: v for k, v in new_reminder.items() if v is not None}
+            await db.reminders.insert_one(new_reminder)
+            logger.info(f"Created new recurring reminder {new_id} (from {reminder['id']}) for {next_time}")
+        else:
+            # Normal case: update the existing reminder in-place
+            await db.reminders.update_one(
+                {"id": reminder['id']},
+                {"$set": {
+                    "scheduled_time": serialize_datetime(next_time),
+                    "status": "pending",
+                    "follow_up_count": 0
+                }}
+            )
+            logger.info(f"Scheduled next occurrence of {reminder['id']} for {next_time}")
         
     except Exception as e:
         logger.error(f"Error scheduling next occurrence: {e}")
