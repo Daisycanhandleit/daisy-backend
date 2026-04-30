@@ -1537,6 +1537,52 @@ async def whatsapp_webhook(
                 
                 logger.info(f"Downloading vCard from: {media_url}")
                 
+                # Helper: normalize a phone number from vCard using user's country code
+                def normalize_vcard_phone(raw_phone: str, user_phone: str) -> str:
+                    """Convert local phone numbers to international format using user's country code."""
+                    cleaned = re.sub(r'[^\d+]', '', raw_phone)
+                    
+                    # Already has + prefix with country code
+                    if cleaned.startswith('+') and len(cleaned) >= 10:
+                        return cleaned
+                    
+                    # Remove leading + if it was added incorrectly
+                    digits = cleaned.lstrip('+')
+                    
+                    # Detect user's country code from their phone
+                    user_clean = user_phone.replace('whatsapp:', '').strip()
+                    user_country_code = ''
+                    if user_clean.startswith('+61'):
+                        user_country_code = '61'
+                    elif user_clean.startswith('+91'):
+                        user_country_code = '91'
+                    elif user_clean.startswith('+1'):
+                        user_country_code = '1'
+                    elif user_clean.startswith('+44'):
+                        user_country_code = '44'
+                    elif user_clean.startswith('+64'):
+                        user_country_code = '64'
+                    else:
+                        # Try to extract country code (first 1-3 digits after +)
+                        if user_clean.startswith('+'):
+                            user_country_code = user_clean[1:3]
+                    
+                    # If number starts with 0 (local format), replace leading 0 with country code
+                    if digits.startswith('0') and len(digits) >= 9:
+                        return f"+{user_country_code}{digits[1:]}"
+                    
+                    # If number is just digits without country code (and not starting with 0)
+                    # Check if it already looks like it has a country code by length
+                    if len(digits) >= 11:
+                        # Likely already has country code
+                        return f"+{digits}"
+                    elif len(digits) >= 9 and user_country_code:
+                        # Likely local number, add country code
+                        return f"+{user_country_code}{digits}"
+                    
+                    # Fallback: just prepend +
+                    return f"+{digits}" if digits else ""
+                
                 async with httpx.AsyncClient() as http_client:
                     response = await http_client.get(media_url, auth=(twilio_sid, twilio_token), follow_redirects=True)
                     vcard_content = response.text
@@ -1551,9 +1597,7 @@ async def whatsapp_webhook(
                             # vobject can have multiple tel entries via tel_list
                             for tel_entry in vcard.tel_list:
                                 tel_value = tel_entry.value if hasattr(tel_entry, 'value') else str(tel_entry)
-                                cleaned = re.sub(r'[^\d+]', '', tel_value)
-                                if cleaned and not cleaned.startswith('+'):
-                                    cleaned = '+' + cleaned
+                                cleaned = normalize_vcard_phone(tel_value, From)
                                 if len(cleaned) >= 10:
                                     extracted_phone = cleaned
                                     logger.info(f"Extracted phone from vCard tel_list: {extracted_phone}")
@@ -1562,9 +1606,7 @@ async def whatsapp_webhook(
                         if not extracted_phone and hasattr(vcard, 'tel'):
                             # Single tel entry fallback
                             tel_value = vcard.tel.value if hasattr(vcard.tel, 'value') else str(vcard.tel)
-                            extracted_phone = re.sub(r'[^\d+]', '', tel_value)
-                            if extracted_phone and not extracted_phone.startswith('+'):
-                                extracted_phone = '+' + extracted_phone
+                            extracted_phone = normalize_vcard_phone(tel_value, From)
                             if len(extracted_phone) < 10:
                                 extracted_phone = None
                             else:
@@ -1593,9 +1635,8 @@ async def whatsapp_webhook(
                         for pattern in tel_patterns:
                             tel_match = re.search(pattern, vcard_content, re.IGNORECASE)
                             if tel_match:
-                                extracted_phone = re.sub(r'[^\d+]', '', tel_match.group(1))
-                                if not extracted_phone.startswith('+'):
-                                    extracted_phone = '+' + extracted_phone
+                                raw_phone = tel_match.group(1)
+                                extracted_phone = normalize_vcard_phone(raw_phone, From)
                                 if len(extracted_phone) >= 10:
                                     logger.info(f"Extracted phone from vCard (regex): {extracted_phone}")
                                     break
@@ -2963,6 +3004,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                 # Send consent request
                 if is_twilio_configured():
                     recurrence_text = "daily" if recurrence == "daily" else "weekly" if recurrence == "weekly" else ""
+                    logger.info(f"Sending consent request to recipient_phone={recipient_phone} (from creator={from_phone}, name={creator_name})")
                     await send_consent_request(recipient_phone, creator_name, f"{recurrence_text} {reminder_message}".strip())
                 
                 response_text = f"Perfect! I've sent a message to {recipient_name} at {recipient_phone} asking for their permission. Once they reply YES, I'll start sending reminders. 🌼"
