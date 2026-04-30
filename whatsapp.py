@@ -405,8 +405,52 @@ I couldn't confirm if this was completed. I'll check again tomorrow if needed.""
 
 
 async def send_consent_request(to_phone: str, requester_name: str, reminder_description: str) -> Optional[str]:
-    """Send a consent request message to a new contact (recipient)"""
-    message = f"""🌼 *Hello! I'm Daisy* — an AI-powered reminder assistant.
+    """Send a consent request message to a new contact (recipient).
+    
+    Uses a pre-approved WhatsApp template (required for first-contact messages).
+    Falls back to freeform message if template fails (for users already in session).
+    """
+    # Template Content SID for consent requests
+    CONSENT_TEMPLATE_SID = os.environ.get("TWILIO_CONSENT_TEMPLATE_SID", "HX5f61d51cc4d09776617a8a3a99e36d3d")
+    
+    if not is_twilio_configured():
+        logger.warning("Twilio not configured - consent not sent")
+        return None
+    
+    twilio_client = get_twilio_client()
+    if not twilio_client:
+        return None
+    
+    whatsapp_number = os.environ.get("TWILIO_WHATSAPP_NUMBER")
+    from_number = format_whatsapp_number(whatsapp_number)
+    to_number = format_whatsapp_number(to_phone)
+    messaging_service_sid = get_messaging_service_sid()
+    
+    # Try sending with template first (required for first-contact messages)
+    try:
+        # Use Content Template with variables
+        create_params = {
+            "content_sid": CONSENT_TEMPLATE_SID,
+            "content_variables": json.dumps({"1": requester_name, "2": reminder_description}),
+            "to": to_number,
+        }
+        
+        # Use messaging service if available, otherwise use from number
+        if messaging_service_sid:
+            create_params["messaging_service_sid"] = messaging_service_sid
+        else:
+            create_params["from_"] = from_number
+        
+        message_response = twilio_client.messages.create(**create_params)
+        logger.info(f"Consent template sent to {to_phone}. SID: {message_response.sid}")
+        return message_response.sid
+        
+    except TwilioRestException as e:
+        logger.warning(f"Template consent failed (code {e.code}), trying freeform: {e}")
+        
+        # Fallback to freeform message (works if user has messaged Daisy within 24hrs)
+        try:
+            freeform_message = f"""🌼 *Hello! I'm Daisy* — an AI-powered reminder assistant.
 
 *Important:* I'm an artificial intelligence (AI), not a human. I'm operated by *Daisy Can Handle It Pty Ltd*, an Australian business.
 
@@ -430,7 +474,20 @@ Reply *STOP* anytime to opt out
 
 Take care! 🌸"""
 
-    return await send_whatsapp_message(to_phone, message)
+            message_response = twilio_client.messages.create(
+                body=freeform_message,
+                from_=from_number,
+                to=to_number
+            )
+            logger.info(f"Freeform consent sent to {to_phone}. SID: {message_response.sid}")
+            return message_response.sid
+            
+        except TwilioRestException as e2:
+            logger.error(f"Both template and freeform consent failed for {to_phone}: {e2}")
+            return None
+    except Exception as e:
+        logger.error(f"Unexpected error sending consent to {to_phone}: {e}")
+        return None
 
 
 async def send_reminder_message(

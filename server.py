@@ -3005,9 +3005,14 @@ Take your time - I'll be here when you're ready! 🌼"""
                 if is_twilio_configured():
                     recurrence_text = "daily" if recurrence == "daily" else "weekly" if recurrence == "weekly" else ""
                     logger.info(f"Sending consent request to recipient_phone={recipient_phone} (from creator={from_phone}, name={creator_name})")
-                    await send_consent_request(recipient_phone, creator_name, f"{recurrence_text} {reminder_message}".strip())
-                
-                response_text = f"Perfect! I've sent a message to {recipient_name} at {recipient_phone} asking for their permission. Once they reply YES, I'll start sending reminders. 🌼"
+                    consent_sid = await send_consent_request(recipient_phone, creator_name, f"{recurrence_text} {reminder_message}".strip())
+                    
+                    if consent_sid:
+                        response_text = f"Perfect! I've sent a message to {recipient_name} at {recipient_phone} asking for their permission. Once they reply YES, I'll start sending reminders. 🌼"
+                    else:
+                        response_text = f"I tried to message {recipient_name} at {recipient_phone}, but it didn't go through. This can happen if they don't have WhatsApp on that number or haven't used WhatsApp recently.\n\nPlease double-check the number and try again, or ask them to send \"Hi\" to +15393091015 on WhatsApp first. 🌼"
+                else:
+                    response_text = f"I've saved the reminder for {recipient_name}. Once messaging is configured, I'll reach out to them. 🌼"
             
             # Clear the pending reminder
             await db.pending_reminders.delete_one({"user_phone": from_phone})
