@@ -1523,7 +1523,8 @@ async def whatsapp_webhook(
     extracted_phone = None
     extracted_name = None
     if NumMedia and int(NumMedia) > 0 and MediaContentType0 and MediaUrl0:
-        if 'vcard' in MediaContentType0.lower() or 'x-vcard' in MediaContentType0.lower() or 'text/x-vcard' in MediaContentType0.lower():
+        content_type_lower = MediaContentType0.lower()
+        if 'vcard' in content_type_lower or 'x-vcard' in content_type_lower or 'directory' in content_type_lower:
             # Download and parse the vCard using vobject library
             try:
                 twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID")
@@ -1545,16 +1546,29 @@ async def whatsapp_webhook(
                     try:
                         vcard = vobject.readOne(vcard_content)
                         
-                        # Extract phone number(s) from vCard
-                        if hasattr(vcard, 'tel'):
-                            # vobject can have multiple tel entries
+                        # Extract phone number(s) from vCard - try multiple TEL entries
+                        if hasattr(vcard, 'tel_list'):
+                            # vobject can have multiple tel entries via tel_list
+                            for tel_entry in vcard.tel_list:
+                                tel_value = tel_entry.value if hasattr(tel_entry, 'value') else str(tel_entry)
+                                cleaned = re.sub(r'[^\d+]', '', tel_value)
+                                if cleaned and not cleaned.startswith('+'):
+                                    cleaned = '+' + cleaned
+                                if len(cleaned) >= 10:
+                                    extracted_phone = cleaned
+                                    logger.info(f"Extracted phone from vCard tel_list: {extracted_phone}")
+                                    break
+                        
+                        if not extracted_phone and hasattr(vcard, 'tel'):
+                            # Single tel entry fallback
                             tel_value = vcard.tel.value if hasattr(vcard.tel, 'value') else str(vcard.tel)
-                            # Clean the phone number - keep only digits and +
                             extracted_phone = re.sub(r'[^\d+]', '', tel_value)
-                            # Ensure it has + prefix
                             if extracted_phone and not extracted_phone.startswith('+'):
                                 extracted_phone = '+' + extracted_phone
-                            logger.info(f"Extracted phone from vCard (vobject): {extracted_phone}")
+                            if len(extracted_phone) < 10:
+                                extracted_phone = None
+                            else:
+                                logger.info(f"Extracted phone from vCard (vobject): {extracted_phone}")
                         
                         # Extract name from vCard
                         if hasattr(vcard, 'fn'):
@@ -1568,10 +1582,13 @@ async def whatsapp_webhook(
                             
                     except Exception as vobj_error:
                         logger.warning(f"vobject parsing failed, trying regex: {vobj_error}")
-                        # Fallback to regex parsing
+                        # Fallback to regex parsing - more comprehensive patterns
                         tel_patterns = [
-                            r'TEL[;:][^:]*:([+\d\s\-()]+)',
+                            r'TEL[;:][^:\n]*:([+\d\s\-()]+)',
                             r'TEL:([+\d\s\-()]+)',
+                            r'tel[;:][^:\n]*:([+\d\s\-()]+)',
+                            r'item\d+\.TEL[;:]?[^:\n]*:([+\d\s\-()]+)',
+                            r'(\+?\d[\d\s\-()]{8,20})',  # Generic number pattern
                         ]
                         for pattern in tel_patterns:
                             tel_match = re.search(pattern, vcard_content, re.IGNORECASE)
@@ -1582,6 +1599,8 @@ async def whatsapp_webhook(
                                 if len(extracted_phone) >= 10:
                                     logger.info(f"Extracted phone from vCard (regex): {extracted_phone}")
                                     break
+                                else:
+                                    extracted_phone = None
                         
                         name_match = re.search(r'FN:(.+?)(?:\r|\n|$)', vcard_content, re.IGNORECASE)
                         if name_match:
@@ -1624,6 +1643,17 @@ async def whatsapp_webhook(
                 logger.error(f"Error parsing vCard: {e}")
                 import traceback
                 logger.error(traceback.format_exc())
+        
+        # If vCard was detected but phone extraction failed, ask user to type it
+        if ('vcard' in (MediaContentType0 or '').lower() or 'x-vcard' in (MediaContentType0 or '').lower()) and not extracted_phone:
+            # vCard was shared but we couldn't extract the phone number
+            logger.warning(f"vCard shared but phone extraction failed for {from_phone}")
+            if is_twilio_configured():
+                await send_whatsapp_message(
+                    from_phone,
+                    "I received the contact card but couldn't read the phone number from it. 📇\n\nCould you type the number instead? Include the country code, like:\n+61 452 502 696\nor\n+91 9582 790310\n\n— Daisy 🌼"
+                )
+            return ""
     
     # ============== VOICE NOTE HANDLING ==============
     # Check if this is a voice note (audio message)
