@@ -1666,7 +1666,7 @@ async def whatsapp_webhook(
                             memory_fact = f"{contact_label}'s phone number is {extracted_phone} (shared via WhatsApp contact card)"
                             existing_mem = await db.user_memory.find_one({
                                 "user_phone": from_phone,
-                                "fact": {"$regex": extracted_phone.replace('+', '\\+')}
+                                "fact": {"$regex": re.escape(extracted_phone)}
                             }, {"_id": 0})
                             if not existing_mem:
                                 await db.user_memory.insert_one({
@@ -2316,7 +2316,7 @@ Take your time - I'll be here when you're ready! 🌼"""
                 relationship_fact = f"{extracted_name}'s phone is {extracted_phone} (shared via contact card)"
                 existing_rel = await db.user_memory.find_one({
                     "user_phone": from_phone,
-                    "fact": {"$regex": extracted_phone}
+                    "fact": {"$regex": re.escape(extracted_phone)}
                 }, {"_id": 0})
                 
                 if not existing_rel:
@@ -3015,9 +3015,11 @@ Take your time - I'll be here when you're ready! 🌼"""
             # Store relationship in user memory for future reference
             if recipient_name and recipient_name.lower() not in ('contact', 'someone'):
                 memory_fact = f"{recipient_name}'s phone number is {recipient_phone}"
+                # Escape special regex chars in phone number (+ is a regex quantifier)
+                phone_escaped = re.escape(recipient_phone)
                 existing_mem = await db.user_memory.find_one({
                     "user_phone": from_phone,
-                    "fact": {"$regex": recipient_phone}
+                    "fact": {"$regex": phone_escaped}
                 }, {"_id": 0})
                 if not existing_mem:
                     await db.user_memory.insert_one({
